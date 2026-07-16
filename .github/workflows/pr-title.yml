@@ -1,0 +1,72 @@
+# Reusable: enforce Conventional Commit PR titles (per GIT_FLOW.md).
+# Callers pass their repo-specific `scopes`. The job ALWAYS runs so the status
+# check is always reported — release-automation PRs are handled at the step
+# level (skip to green), never by skipping the job (a skipped required check
+# hangs the PR forever).
+name: reusable-pr-title
+
+on:
+  workflow_call:
+    inputs:
+      scopes:
+        description: "Newline-separated allowed Conventional-Commit scopes for this repo."
+        required: true
+        type: string
+      types:
+        description: "Newline-separated allowed Conventional-Commit types."
+        required: false
+        type: string
+        default: |
+          feat
+          fix
+          perf
+          refactor
+          docs
+          test
+          build
+          ci
+          chore
+          revert
+          security
+
+permissions:
+  pull-requests: read
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Gate on release automation
+        id: gate
+        env:
+          HEAD_REF: ${{ github.head_ref }}
+        run: |
+          if [[ "$HEAD_REF" == release-please--* ]]; then
+            echo "::notice::release-please PR — skipping title enforcement (check passes)."
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "skip=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Validate PR title (Conventional Commits)
+        if: steps.gate.outputs.skip == 'false'
+        uses: amannn/action-semantic-pull-request@v5
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          types: ${{ inputs.types }}
+          scopes: ${{ inputs.scopes }}
+          requireScope: true
+          subjectPattern: ^[a-z].*[^.]$
+          subjectPatternError: "Subject must start lowercase and not end with a period."
+          validateSingleCommit: false
+
+      - name: Reject emoji in title
+        if: steps.gate.outputs.skip == 'false'
+        env:
+          TITLE: ${{ github.event.pull_request.title }}
+        run: |
+          if echo "$TITLE" | grep -qP '[\x{1F300}-\x{1F9FF}]|[\x{2600}-\x{26FF}]|[\x{2700}-\x{27BF}]'; then
+            echo "::error::PR title contains emoji. See GIT_FLOW.md."
+            exit 1
+          fi

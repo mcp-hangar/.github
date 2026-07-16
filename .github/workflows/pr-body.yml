@@ -1,0 +1,58 @@
+# Reusable: require `## Why` and `## How tested` sections in the PR body
+# (per GIT_FLOW.md / PULL_REQUEST_TEMPLATE.md). The body-check logic is inlined
+# here so consuming repos no longer need their own scripts/check_pr_body.sh.
+# The job ALWAYS runs (so the required check always reports); release-automation
+# PRs and the `trivial` label skip to green inside the step.
+name: reusable-pr-body
+
+on:
+  workflow_call: {}
+
+permissions:
+  pull-requests: read
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Validate PR body sections
+        env:
+          HEAD_REF: ${{ github.head_ref }}
+          PR_BODY: ${{ github.event.pull_request.body }}
+          PR_LABELS: ${{ join(github.event.pull_request.labels.*.name, ',') }}
+        run: |
+          set -euo pipefail
+
+          if [[ "$HEAD_REF" == release-please--* ]]; then
+            echo "release automation PR — skipping body check."
+            exit 0
+          fi
+          if echo "$PR_LABELS" | grep -q "trivial"; then
+            echo "trivial label present. Skipping body check."
+            exit 0
+          fi
+
+          stripped=$(echo "$PR_BODY" | tr -d '\r' | sed 's/<!--.*-->//g' | sed '/<!--/,/-->/d')
+
+          required_sections=("## Why" "## How tested")
+          failed=false
+
+          for section in "${required_sections[@]}"; do
+            if ! echo "$stripped" | grep -qF "$section"; then
+              echo "::error::Missing section: \`$section\`. Add it with content, or apply the \`trivial\` label."
+              failed=true
+              continue
+            fi
+
+            content=$(echo "$stripped" | sed -n "/^${section}$/,/^## /{ /^## /d; p; }" | sed '/^[[:space:]]*$/d')
+            if [ -z "$content" ]; then
+              echo "::error::Section \`$section\` is empty. Add content, or apply the \`trivial\` label."
+              failed=true
+            fi
+          done
+
+          if [ "$failed" = true ]; then
+            exit 1
+          fi
+
+          echo "All required sections present with content."
