@@ -32,24 +32,48 @@ jobs:
             echo "dependabot PR — auto-generated body; skipping section check."
             exit 0
           fi
-          if echo "$PR_LABELS" | grep -q "trivial"; then
+          # Exact-match the `trivial` label (comma-delimited) so a label that merely
+          # contains "trivial" (e.g. `nontrivial`) does not skip validation.
+          if printf ',%s,' "$PR_LABELS" | grep -q ',trivial,'; then
             echo "trivial label present. Skipping body check."
             exit 0
           fi
 
-          stripped=$(echo "$PR_BODY" | tr -d '\r' | sed 's/<!--.*-->//g' | sed '/<!--/,/-->/d')
+          # Normalize the body before checking: drop fenced code blocks and HTML
+          # comments (inline and multi-line) so a `## Why` inside a code sample or a
+          # comment does not count as the section, and real prose sharing a comment's
+          # closing `-->` line is not lost. Fences toggle before comment handling so
+          # code content never corrupts comment state.
+          stripped=$(printf '%s\n' "$PR_BODY" | tr -d '\r' | awk '
+            BEGIN { code=0; comment=0 }
+            {
+              line=$0
+              if (!comment && line ~ /^[[:space:]]*(```|~~~)/) { code=!code; next }
+              if (code) next
+              if (comment) { p=index(line,"-->"); if (p==0) next; line=substr(line,p+3); comment=0 }
+              while ((s=index(line,"<!--"))>0) {
+                rest=substr(line,s+4); e=index(rest,"-->")
+                if (e==0) { line=substr(line,1,s-1); comment=1; break }
+                line=substr(line,1,s-1) substr(rest,e+3)
+              }
+              print line
+            }')
 
           required_sections=("## Why" "## How tested")
           failed=false
 
           for section in "${required_sections[@]}"; do
-            if ! echo "$stripped" | grep -qF "$section"; then
+            # Anchored and tolerant of trailing whitespace: only a real header line
+            # matches (not a mention in prose), and `## Why ` with a stray trailing
+            # space still resolves to its content.
+            header_re="^${section}[[:space:]]*$"
+            if ! printf '%s\n' "$stripped" | grep -qE "$header_re"; then
               echo "::error::Missing section: \`$section\`. Add it with content, or apply the \`trivial\` label."
               failed=true
               continue
             fi
 
-            content=$(echo "$stripped" | sed -n "/^${section}$/,/^## /{ /^## /d; p; }" | sed '/^[[:space:]]*$/d')
+            content=$(printf '%s\n' "$stripped" | sed -n "/${header_re}/,/^## /{ /^## /d; p; }" | sed '/^[[:space:]]*$/d')
             if [ -z "$content" ]; then
               echo "::error::Section \`$section\` is empty. Add content, or apply the \`trivial\` label."
               failed=true
