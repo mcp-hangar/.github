@@ -2,7 +2,8 @@
 # (per GIT_FLOW.md / PULL_REQUEST_TEMPLATE.md). The body-check logic is inlined
 # here so consuming repos no longer need their own scripts/check_pr_body.sh.
 # The job ALWAYS runs (so the required check always reports); release-automation
-# PRs and the `trivial` label skip to green inside the step.
+# PRs, dependabot PRs (auto-generated bodies), and the `trivial` label skip to
+# green inside the step.
 name: reusable-pr-body
 
 on:
@@ -25,6 +26,10 @@ jobs:
 
           if [[ "$HEAD_REF" == release-please--* ]]; then
             echo "release automation PR — skipping body check."
+            exit 0
+          fi
+          if [[ "$HEAD_REF" == dependabot/* ]]; then
+            echo "dependabot PR — auto-generated body; skipping section check."
             exit 0
           fi
           if echo "$PR_LABELS" | grep -q "trivial"; then
