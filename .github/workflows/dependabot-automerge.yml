@@ -1,0 +1,38 @@
+# Reusable: enable GitHub auto-merge on a Dependabot PR for SAFE bumps
+# (patch & minor) so it merges itself once the required checks pass. Majors are
+# never auto-merged — they get a human. Security updates are handled by Dependabot
+# separately and also flow through here (still gated on patch/minor + green CI).
+#
+# Requires, in each consuming repo: Settings -> General -> Pull Requests ->
+# "Allow auto-merge" enabled. Without it, `gh pr merge --auto` no-ops loudly and
+# the PR simply waits for a manual merge — safe either way.
+name: reusable-dependabot-automerge
+
+on:
+  workflow_call: {}
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  automerge:
+    runs-on: ubuntu-latest
+    if: ${{ github.actor == 'dependabot[bot]' }}
+    steps:
+      - name: Fetch Dependabot metadata
+        id: meta
+        uses: dependabot/fetch-metadata@v2
+
+      - name: Enable auto-merge for patch & minor
+        if: ${{ contains(fromJSON('["version-update:semver-patch","version-update:semver-minor"]'), steps.meta.outputs.update-type) }}
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR_URL: ${{ github.event.pull_request.html_url }}
+        run: |
+          echo "::notice::${{ steps.meta.outputs.dependency-names }} is a ${{ steps.meta.outputs.update-type }} — enabling auto-merge."
+          gh pr merge --auto --squash "$PR_URL"
+
+      - name: Leave majors for a human
+        if: ${{ !contains(fromJSON('["version-update:semver-patch","version-update:semver-minor"]'), steps.meta.outputs.update-type) }}
+        run: echo "::notice::${{ steps.meta.outputs.update-type }} — not auto-merging; a human reviews this one."
