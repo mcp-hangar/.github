@@ -1,0 +1,27 @@
+# Reusable: reject non-canonical MCP Hangar domains (ADR-011). mcp-hangar.io is
+# the single source of truth for the domain; this guards against a drifted host
+# (a github.io / vercel.app variant) creeping back into any repo. Matches only in
+# URL context, so bare mentions of the hosts in prose/config keys do not trip it.
+name: reusable-domain-lint
+
+on:
+  workflow_call: {}
+
+permissions:
+  contents: read
+
+jobs:
+  domain:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Reject non-canonical domains
+        run: |
+          set -euo pipefail
+          pattern='https?://(mcp-hangar\.github\.io|mcp-hangar[a-z0-9-]*\.vercel\.app)'
+          if hits="$(git grep -nEI "$pattern" -- ':!*.lock' ':!*-lock.*' ':!*.sum' 2>/dev/null)"; then
+            echo "::error::Non-canonical MCP Hangar domain in a URL (ADR-011). Use https://mcp-hangar.io."
+            echo "$hits"
+            exit 1
+          fi
+          echo "OK: no non-canonical mcp-hangar domains in tracked files."
