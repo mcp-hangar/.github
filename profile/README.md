@@ -19,7 +19,7 @@ Hangar enforces explicit policy **on** the MCP call path, not beside it. Every t
 - Caller identity from JWT/OIDC, with RFC 8707 audience binding and multi-issuer trust.
 - **Tool-schema** digest pinning: a server that changes a pinned tool's schema fails closed.
 - L7 egress policy written in MCP semantics — which upstream, which tool, which arguments — through the `MCPEgressPolicy` CRD (alpha API).
-- Governed task relay with a consent gate: Hangar interposes on the task lifecycle and never executes the task. Preview, on the 2.0 line.
+- Governed task relay with a consent gate: Hangar interposes on the task lifecycle and never executes the task. Shipped in core 2.0.0; not in the 1.6.x line.
 - Attributable audit chain, exported to SIEM as CEF, LEEF 2.0, RFC 5424 syslog or JSON-lines, and to OTLP.
 - Kubernetes-native: CRDs, admission validation, and an operator that reconciles them.
 
