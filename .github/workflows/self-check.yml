@@ -1,0 +1,37 @@
+# Calls this repo's own reusables on this repo's own pull requests.
+#
+# actionlint beside this catches malformed YAML. It does not catch a validator
+# that parses cleanly and no longer validates -- a regex that stopped matching,
+# a step that exits 0 on the failure path, a `with:` input that quietly became
+# required. Six repos depend on these four workflows and none of that was
+# exercised anywhere before the change was already on `main`.
+#
+# `uses: ./` resolves from the pull request head, so a change to a reusable is
+# run by the pull request that makes it, over the same code path the consumers
+# get.
+name: self-check
+
+on:
+  pull_request:
+
+permissions:
+  contents: read
+  pull-requests: read
+
+jobs:
+  pr-title:
+    uses: ./.github/workflows/pr-title.yml
+    with:
+      scopes: |
+        ci
+        docs
+        repo
+
+  pr-body:
+    uses: ./.github/workflows/pr-body.yml
+
+  branch-name:
+    uses: ./.github/workflows/branch-name.yml
+
+  domain-lint:
+    uses: ./.github/workflows/domain-lint.yml

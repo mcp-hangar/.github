@@ -1,0 +1,41 @@
+# Validates the workflow YAML in this repo. Everything here is a reusable that
+# six other repos call, so a syntax error or a bad expression lands on `main`
+# and reaches all of them -- immediately for the callers that float on @main,
+# at the next bump for the pinned ones. Nothing ran actionlint here until now.
+name: actionlint
+
+on:
+  pull_request:
+    paths:
+      - '.github/workflows/**'
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/**'
+  schedule:
+    - cron: '0 6 * * 1'   # Monday 06:00 UTC, drift catcher
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  actionlint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - name: Download actionlint
+        id: get_actionlint
+        shell: bash
+        run: bash <(curl -sSfL https://raw.githubusercontent.com/rhysd/actionlint/main/scripts/download-actionlint.bash)
+      - name: Lint workflows
+        shell: bash
+        # -shellcheck= disables shellcheck integration, matching the core repo:
+        # this gate validates workflow YAML, expressions and action refs, not
+        # shell style inside run: blocks. actionlint's own checks (including
+        # script-injection) stay active.
+        run: ${{ steps.get_actionlint.outputs.executable }} -color -shellcheck=
