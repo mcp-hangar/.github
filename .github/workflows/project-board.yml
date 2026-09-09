@@ -14,9 +14,9 @@
 # What it does, by event:
 #
 #   issues opened/reopened          put the issue on the board
-#   pull_request* opened/reopened/  put the pull request on the board, and move
-#     ready_for_review                every issue it declares it closes to
-#                                     In Progress
+#   pull_request* opened/reopened/  put the pull request on the board as
+#     ready_for_review                In Review, and move every issue it
+#                                     declares it closes to In Progress
 #   issues labeled/unlabeled        the blocked label moves the issue to
 #     (blocked_label)                 Blocked, and removing it moves the issue
 #                                     back out
@@ -94,6 +94,7 @@ jobs:
           PR_NUMBER: ${{ github.event.pull_request.number }}
           ISSUE_NUMBER: ${{ github.event.issue.number }}
           LABEL_NAME: ${{ github.event.label.name }}
+          PR_IS_DRAFT: ${{ github.event.pull_request.draft }}
         run: |
           set -euo pipefail
 
@@ -182,7 +183,15 @@ jobs:
             pull_request:*|pull_request_target:*)
               cid="$(node_id pullRequest "${PR_NUMBER}")"
               if [ -n "${cid}" ]; then
-                add "${cid}" "PR #${PR_NUMBER}"
+                # An open pull request is under review, which is the one thing
+                # In Review can mean without anyone having to say so. A draft
+                # is not: it is work in progress that happens to have a branch
+                # pushed.
+                if [ "${PR_IS_DRAFT}" = "true" ]; then
+                  move "${cid}" "In Progress" "PR #${PR_NUMBER}"
+                else
+                  move "${cid}" "In Review" "PR #${PR_NUMBER}"
+                fi
               else
                 echo "::warning::Could not resolve PR #${PR_NUMBER}."
               fi

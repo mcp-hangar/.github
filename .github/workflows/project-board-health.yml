@@ -32,7 +32,7 @@ permissions:
 
 env:
   PROJECT_NUMBER: "1"
-  REQUIRED_OPTIONS: "Triage,In Progress,Blocked,Done"
+  REQUIRED_OPTIONS: "Triage,In Progress,In Review,Blocked,Done"
 
 jobs:
   health:
