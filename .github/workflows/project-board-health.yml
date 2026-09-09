@@ -1,0 +1,146 @@
+# Asserts, on a schedule, that the board is actually writable.
+#
+# Every workflow that writes to the board is deliberately non-fatal: a project
+# that cannot be reached must not red-check somebody's pull request. The cost of
+# that choice is silence, and on 2026-09-09 the silence lasted -- one repo's
+# stored project token had been empty for hours, and it only came to light
+# because a different workflow happened to fail hard on the same secret. Three
+# separate times that day a green run meant nothing had happened.
+#
+# So the visibility lives here instead: once a week, prove the whole chain end
+# to end, and open an issue when it breaks. Per-run workflows stay quiet and
+# non-blocking; breakage still gets found within a week, actively.
+#
+# The write is a real mutation, not a read. Reading the project proves the token
+# can see it; only a write proves the installation carries
+# Organization > Projects: Read & write -- the exact permission that was missing
+# on 2026-09-09 while every read succeeded. It rewrites one item's Status to the
+# value it already has, so the board is unchanged.
+name: project-board-health
+
+on:
+  schedule:
+    - cron: "0 9 * * 1"  # weekly, Monday 09:00 UTC
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+env:
+  PROJECT_NUMBER: "1"
+  REQUIRED_OPTIONS: "Triage,In Progress,Blocked,Done"
+
+jobs:
+  health:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      issues: write
+    outputs:
+      failure: ${{ steps.check.outputs.failure }}
+    steps:
+      - uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        id: app-token
+        with:
+          client-id: Iv23li8REbSH4JUkiLb7  # mcp-hangar-release-bot, public
+          private-key: ${{ secrets.RELEASE_BOT_PRIVATE_KEY }}
+          owner: ${{ github.repository_owner }}
+
+      - name: Prove the board is readable and writable
+        id: check
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          OWNER: ${{ github.repository_owner }}
+        run: |
+          set -uo pipefail
+          # Random delimiter, per GitHub's guidance on multi-line outputs: the
+          # message embeds an API response, and a fixed marker appearing inside
+          # it would let that response write arbitrary step outputs.
+          delim="EOM_$(openssl rand -hex 12)"
+          fail() {
+            { echo "failure<<${delim}"; echo "$1"; echo "${delim}"; } >> "$GITHUB_OUTPUT"
+            echo "::error::$1"
+            exit 0
+          }
+
+          if [ -z "${GH_TOKEN}" ]; then
+            fail "The App produced no token. RELEASE_BOT_PRIVATE_KEY is missing or no longer valid."
+          fi
+
+          project_json="$(gh api graphql -f query='
+            query($o:String!,$n:Int!){
+              organization(login:$o){
+                projectV2(number:$n){
+                  id
+                  field(name:"Status"){ ... on ProjectV2SingleSelectField{ id options{ id name } } }
+                  items(first:20){ nodes{ id fieldValueByName(name:"Status"){ ... on ProjectV2ItemFieldSingleSelectValue{ optionId name } } } }
+                }
+              }
+            }' -f o="${OWNER}" -F n="${PROJECT_NUMBER}" --jq '.data.organization.projectV2' 2>&1)"
+
+          if ! printf '%s' "${project_json}" | jq -e '.id' >/dev/null 2>&1; then
+            fail "Could not read project ${PROJECT_NUMBER}. The App token authenticates but cannot see the project -- usually Organization > Projects is granted on the App and not on the installation. Response: $(printf '%s' "${project_json}" | head -c 300)"
+          fi
+
+          FIELD_ID="$(printf '%s' "${project_json}" | jq -r '.field.id // empty')"
+          [ -n "${FIELD_ID}" ] || fail "Project ${PROJECT_NUMBER} has no single-select Status field."
+
+          missing=""
+          IFS=',' read -ra want <<< "${REQUIRED_OPTIONS}"
+          for o in "${want[@]}"; do
+            printf '%s' "${project_json}" | jq -e --arg n "$o" '.field.options[] | select(.name == $n)' >/dev/null 2>&1 \
+              || missing="${missing}${missing:+, }${o}"
+          done
+          [ -z "${missing}" ] || fail "The Status field is missing options the workflows write: ${missing}. Deleting an option in the Projects UI is safe; doing it through updateProjectV2Field is not -- that rebuilds the whole field and clears every assignment."
+
+          probe="$(printf '%s' "${project_json}" | jq -r '[.items.nodes[] | select(.fieldValueByName.optionId != null)][0] // empty')"
+          [ -n "${probe}" ] || fail "No item on project ${PROJECT_NUMBER} carries a Status value, so write access could not be proven."
+
+          ITEM_ID="$(printf '%s' "${probe}" | jq -r '.id')"
+          OPT_ID="$(printf '%s' "${probe}" | jq -r '.fieldValueByName.optionId')"
+          OPT_NAME="$(printf '%s' "${probe}" | jq -r '.fieldValueByName.name')"
+          PROJECT_ID="$(printf '%s' "${project_json}" | jq -r '.id')"
+
+          # Rewrites the value it already holds: proves write access, changes
+          # nothing.
+          if ! out="$(gh api graphql -f query='
+            mutation($p:ID!,$i:ID!,$f:ID!,$o:String!){
+              updateProjectV2ItemFieldValue(input:{projectId:$p,itemId:$i,fieldId:$f,value:{singleSelectOptionId:$o}}){ projectV2Item{ id } }
+            }' -f p="${PROJECT_ID}" -f i="${ITEM_ID}" -f f="${FIELD_ID}" -f o="${OPT_ID}" 2>&1)"; then
+            fail "The board is readable but not writable. Rewriting one item's Status to the value it already had ('${OPT_NAME}') was rejected: $(printf '%s' "${out}" | head -c 300)"
+          fi
+
+          echo "Board ${PROJECT_NUMBER} readable and writable; required options present."
+          echo "failure=" >> "$GITHUB_OUTPUT"
+
+      - name: File or update the alert
+        if: ${{ steps.check.outputs.failure != '' }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+          DETAIL: ${{ steps.check.outputs.failure }}
+        run: |
+          set -euo pipefail
+          title="project board automation is broken"
+          body="The weekly board health check failed.
+
+          ${DETAIL}
+
+          Everything that writes to the board is non-fatal by design, so nothing
+          else will report this. Until it is fixed, items stop moving and no
+          pull request turns red.
+
+          Run \`project-board-health\` again from the Actions tab to re-check."
+          existing="$(gh issue list -R "${GITHUB_REPOSITORY}" --state open --search "in:title ${title}" --json url --jq '.[0].url // ""')"
+          if [ -n "${existing}" ]; then
+            gh issue comment "${existing}" -R "${GITHUB_REPOSITORY}" --body "Still failing: ${DETAIL}"
+          else
+            gh issue create -R "${GITHUB_REPOSITORY}" --title "${title}" --body "${body}"
+          fi
+
+      - name: Fail the run when the board is broken
+        if: ${{ steps.check.outputs.failure != '' }}
+        run: exit 1
