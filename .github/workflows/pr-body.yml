@@ -34,7 +34,7 @@ jobs:
           fi
           # Exact-match the `trivial` label (comma-delimited) so a label that merely
           # contains "trivial" (e.g. `nontrivial`) does not skip validation.
-          if printf ',%s,' "$PR_LABELS" | grep -q ',trivial,'; then
+          if grep -q ',trivial,' <<<",$PR_LABELS,"; then
             echo "trivial label present. Skipping body check."
             exit 0
           fi
@@ -67,7 +67,11 @@ jobs:
             # matches (not a mention in prose), and `## Why ` with a stray trailing
             # space still resolves to its content.
             header_re="^${section}[[:space:]]*$"
-            if ! printf '%s\n' "$stripped" | grep -qE "$header_re"; then
+            # A here-string, not `printf ... | grep -q`: under `pipefail`, grep -q
+            # exits on the first match, the writer still holding more than a pipe
+            # buffer of body dies of SIGPIPE, and a large body that has the section
+            # was reported as missing it.
+            if ! grep -qE "$header_re" <<<"$stripped"; then
               echo "::error::Missing section: \`$section\`. Add it with content, or apply the \`trivial\` label."
               failed=true
               continue
