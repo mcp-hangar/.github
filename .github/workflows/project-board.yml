@@ -15,8 +15,10 @@
 #
 #   issues opened/reopened          put the issue on the board
 #   pull_request* opened/reopened/  put the pull request on the board as
-#     ready_for_review                In Review, and move every issue it
-#                                     declares it closes to In Progress
+#     ready_for_review                In Review, move every issue it
+#                                     declares it closes to In Progress, and
+#                                     assign each of those that nobody holds
+#                                     to the pull request's author
 #   issues labeled/unlabeled        the blocked label moves the issue to
 #     (blocked_label)                 Blocked, and removing it moves the issue
 #                                     back out
@@ -50,7 +52,7 @@ on:
         default: "Iv23li8REbSH4JUkiLb7"
     secrets:
       APP_PRIVATE_KEY:
-        description: "Private key for app_client_id. The App needs Organization > Projects: Read & write, granted on the installation and not only on the App."
+        description: "Private key for app_client_id. The App needs Organization > Projects: Read & write, granted on the installation and not only on the App, and Repository > Issues: Read & write to assign an issue to the author of the pull request that closes it."
         required: false
       PROJECT_TOKEN:
         description: "Escape hatch: a token with project scope, used instead of minting one. Without either, the job warns and passes."
@@ -95,6 +97,8 @@ jobs:
           ISSUE_NUMBER: ${{ github.event.issue.number }}
           LABEL_NAME: ${{ github.event.label.name }}
           PR_IS_DRAFT: ${{ github.event.pull_request.draft }}
+          PR_AUTHOR: ${{ github.event.pull_request.user.login }}
+          PR_AUTHOR_TYPE: ${{ github.event.pull_request.user.type }}
         run: |
           set -euo pipefail
 
@@ -179,6 +183,36 @@ jobs:
             fi
           }
 
+          # Opening a pull request that closes an issue is the one claim on
+          # that issue nobody has to remember to make. Assigning by hand when
+          # work starts is still the rule; this is the net under it. On
+          # 2026-11-15 none of the organization's 71 open issues had an
+          # assignee, the ones with an open pull request included.
+          #
+          # An issue somebody already holds is left alone: a second pull
+          # request against it is not a takeover. A bot author assigns
+          # nothing, so release and dependency pull requests are no-ops here.
+          assign() {  # $1 repo name, $2 issue number, $3 current assignee count
+            local got
+            if [ -z "${PR_AUTHOR}" ] || [ "${PR_AUTHOR_TYPE}" = "Bot" ]; then
+              echo "PR #${PR_NUMBER} was opened by a bot; $1#$2 not assigned."
+              return 0
+            fi
+            if [ "$3" != "0" ]; then
+              echo "$1#$2 already has an assignee; left as it is."
+              return 0
+            fi
+            # The API answers 201 and silently drops a login that cannot be
+            # assigned (an outside contributor), so the answer is read back.
+            got="$(gh api -X POST "repos/${OWNER}/$1/issues/$2/assignees" \
+              -f "assignees[]=${PR_AUTHOR}" --jq '.assignees[].login' 2>/dev/null || true)"
+            if grep -qixF -- "${PR_AUTHOR}" <<< "${got}"; then
+              echo "$1#$2 assigned to ${PR_AUTHOR}"
+            else
+              echo "::warning::Could not assign $1#$2 to ${PR_AUTHOR}."
+            fi
+          }
+
           case "${EVENT_NAME}:${ACTION}" in
             pull_request:*|pull_request_target:*)
               cid="$(node_id pullRequest "${PR_NUMBER}")"
@@ -208,17 +242,18 @@ jobs:
               refs="$(gh api graphql -f query='
                 query($o:String!,$r:String!,$n:Int!){
                   repository(owner:$o,name:$r){
-                    pullRequest(number:$n){ closingIssuesReferences(first:20){ nodes{ id number state } } }
+                    pullRequest(number:$n){ closingIssuesReferences(first:20){ nodes{ id number state repository{ name } assignees(first:1){ totalCount } } } }
                   }
                 }' -f o="${OWNER}" -f r="${REPO_NAME}" -F n="${PR_NUMBER}" \
-                --jq '.data.repository.pullRequest.closingIssuesReferences.nodes[] | select(.state == "OPEN") | "\(.id) \(.number)"' 2>/dev/null || true)"
+                --jq '.data.repository.pullRequest.closingIssuesReferences.nodes[] | select(.state == "OPEN") | "\(.id) \(.number) \(.repository.name) \(.assignees.totalCount)"' 2>/dev/null || true)"
               if [ -z "${refs}" ]; then
                 echo "PR #${PR_NUMBER} declares no open closing issue."
                 exit 0
               fi
-              while read -r rcid num; do
+              while read -r rcid num rrepo held; do
                 [ -n "${rcid}" ] || continue
                 move "${rcid}" "In Progress" "issue #${num}"
+                assign "${rrepo}" "${num}" "${held}"
               done <<< "${refs}"
               ;;
 
